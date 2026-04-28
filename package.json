@@ -1,0 +1,17 @@
+{
+  "name": "@specodec/typespec-specodec-dart",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch"
+  },
+  "dependencies": {
+    "@typespec/compiler": "latest"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  }
+}
