@@ -2,10 +2,13 @@ import {
   EmitContext,
   Model,
   ModelProperty,
+  Namespace,
   Program,
   Scalar,
   Type,
   emitFile,
+  listServices,
+  navigateTypesInNamespace,
   resolvePath,
 } from "@typespec/compiler";
 
@@ -267,34 +270,49 @@ function collectModels(program: Program): Model[] {
   return models;
 }
 
-function getServiceName(program: Program): string {
-  for (const [ns] of program.getGlobalNamespaceType().namespaces) {
-    if (ns !== "TypeSpec") return ns;
+function collectServices(program: Program): { serviceName: string; models: Model[] }[] {
+  const services = listServices(program);
+  const result: { serviceName: string; models: Model[] }[] = [];
+
+  function collectFromNs(ns: Namespace) {
+    for (const [, iface] of ns.interfaces) {
+      const models: Model[] = [];
+      const seen = new Set<string>();
+      navigateTypesInNamespace(ns, {
+        model: (m: Model) => {
+          if (m.name && !seen.has(m.name)) { models.push(m); seen.add(m.name); }
+        },
+      });
+      result.push({ serviceName: iface.name, models });
+    }
   }
-  return "generated";
+
+  for (const svc of services) collectFromNs(svc.type);
+  if (result.length === 0) {
+    const globalNs = program.getGlobalNamespaceType();
+    for (const [, ns] of globalNs.namespaces) collectFromNs(ns);
+    collectFromNs(globalNs);
+  }
+  return result;
 }
 
 export async function $onEmit(context: EmitContext<EmitterOptions>): Promise<void> {
   const outputDir = context.options["output-dir"] ?? context.emitterOutputDir;
   const program = context.program;
 
-  const models = collectModels(program);
-  if (models.length === 0) return;
-
-  const serviceName = getServiceName(program);
-  const fileName = toSnakeCase(serviceName) + "_types.dart";
-
-  const lines: string[] = [];
-  lines.push(`import 'dart:typed_data';`);
-  lines.push(`import 'package:specodec/specodec.dart';`);
-  lines.push(``);
-
-  for (const model of models) {
-    lines.push(emitModel(model));
+  for (const svc of collectServices(program)) {
+    if (svc.models.length === 0) continue;
+    const fileName = toSnakeCase(svc.serviceName) + "_types.dart";
+    const lines: string[] = [];
+    lines.push(`import 'dart:typed_data';`);
+    lines.push(`import 'package:specodec/specodec.dart';`);
+    lines.push(``);
+    for (const model of svc.models) {
+      lines.push(emitModel(model));
+    }
+    await emitFile(program, {
+      path: resolvePath(outputDir, fileName),
+      content: lines.join("\n"),
+    });
   }
-
-  await emitFile(program, {
-    path: resolvePath(outputDir, fileName),
-    content: lines.join("\n"),
-  });
 }
