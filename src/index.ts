@@ -30,13 +30,14 @@ function dartTypeFor(type: Type, optional: boolean): string {
 function dartBaseType(type: Type): string {
   if (type.kind === "Scalar") {
     const s = type as Scalar;
-    const name = s.name;
-    switch (name) {
+    switch (s.name) {
       case "string": return "String";
       case "boolean": return "bool";
       case "int8": case "int16": case "int32": case "integer":
-      case "int64": case "uint8": case "uint16": case "uint32": case "uint64":
+      case "uint8": case "uint16": case "uint32":
         return "int";
+      case "int64": case "uint64":
+        return "BigInt";
       case "float32": case "float64": case "float": case "decimal":
         return "double";
       case "bytes": return "Uint8List";
@@ -51,6 +52,7 @@ function dartBaseType(type: Type): string {
     }
     return m.name;
   }
+  if (type.kind === "Enum") return "String";
   return "dynamic";
 }
 
@@ -67,34 +69,68 @@ function getArrayElementType(type: Type): Type {
   return m.indexer!.value;
 }
 
-function writeExpr(type: Type, expr: string): string {
+function isModelType(type: Type): boolean {
+  return type.kind === "Model" && !!(type as Model).name && !isArrayType(type);
+}
+
+function writeJsonExpr(expr: string, type: Type, w: string): string {
+  if (isArrayType(type)) {
+    const elem = getArrayElementType(type);
+    return `${w}.beginArray(); for (final _e in ${expr}) { ${w}.nextElement(); ${writeJsonExpr("_e", elem, w)}; } ${w}.endArray()`;
+  }
   if (type.kind === "Scalar") {
     const s = type as Scalar;
     switch (s.name) {
-      case "string": return `w.writeString(${expr})`;
-      case "boolean": return `w.writeBool(${expr})`;
+      case "string": return `${w}.writeString(${expr})`;
+      case "boolean": return `${w}.writeBool(${expr})`;
       case "int8": case "int16": case "int32": case "integer":
-        return `w.writeInt32(${expr})`;
-      case "int64": return `w.writeInt64(${expr})`;
+        return `${w}.writeInt32(${expr})`;
+      case "int64": return `${w}.writeInt64(${expr})`;
       case "uint8": case "uint16": case "uint32":
-        return `w.writeUint32(${expr})`;
-      case "uint64": return `w.writeUint64(${expr})`;
-      case "float32": return `w.writeFloat32(${expr})`;
+        return `${w}.writeUint32(${expr})`;
+      case "uint64": return `${w}.writeUint64(${expr})`;
+      case "float32": return `${w}.writeFloat32(${expr})`;
       case "float64": case "float": case "decimal":
-        return `w.writeFloat64(${expr})`;
-      case "bytes": return `w.writeBytes(${expr})`;
-      default: return `w.writeString(${expr}.toString())`;
+        return `${w}.writeFloat64(${expr})`;
+      case "bytes": return `${w}.writeBytes(${expr})`;
+      default: return `${w}.writeString(${expr}.toString())`;
     }
   }
-  if (type.kind === "Model") {
-    const m = type as Model;
-    if (m.indexer) {
-      const elemType = getArrayElementType(type);
-      const writeElem = writeExpr(elemType, "_e");
-      return `w.beginArray(${expr}.length); for (final _e in ${expr}) { w.nextElement(); ${writeElem}; } w.endArray()`;
+  if (type.kind === "Enum") return `${w}.writeEnum(${expr})`;
+  if (isModelType(type)) {
+    return `_writeJson${(type as Model).name}(${w}, ${expr})`;
+  }
+  return `// TODO: unknown type`;
+}
+
+function writeMsgPackExpr(expr: string, type: Type, w: string): string {
+  if (isArrayType(type)) {
+    const elem = getArrayElementType(type);
+    return `${w}.beginArray(${expr}.length); for (final _e in ${expr}) { ${writeMsgPackExpr("_e", elem, w)}; } ${w}.endArray()`;
+  }
+  if (type.kind === "Scalar") {
+    const s = type as Scalar;
+    switch (s.name) {
+      case "string": return `${w}.writeString(${expr})`;
+      case "boolean": return `${w}.writeBool(${expr})`;
+      case "int8": case "int16": case "int32": case "integer":
+        return `${w}.writeInt32(${expr})`;
+      case "int64": return `${w}.writeInt64(${expr})`;
+      case "uint8": case "uint16": case "uint32":
+        return `${w}.writeUint32(${expr})`;
+      case "uint64": return `${w}.writeUint64(${expr})`;
+      case "float32": return `${w}.writeFloat32(${expr})`;
+      case "float64": case "float": case "decimal":
+        return `${w}.writeFloat64(${expr})`;
+      case "bytes": return `${w}.writeBytes(${expr})`;
+      default: return `${w}.writeString(${expr}.toString())`;
     }
   }
-  return `w.writeString(${expr}.toString())`;
+  if (type.kind === "Enum") return `${w}.writeEnum(${expr})`;
+  if (isModelType(type)) {
+    return `_writeMsgPack${(type as Model).name}(${w}, ${expr})`;
+  }
+  return `// TODO: unknown type`;
 }
 
 function readExpr(type: Type): string {
@@ -116,6 +152,7 @@ function readExpr(type: Type): string {
       default: return "r.readString()";
     }
   }
+  if (type.kind === "Enum") return "r.readEnum()";
   if (type.kind === "Model") {
     const m = type as Model;
     if (m.indexer) {
@@ -124,7 +161,7 @@ function readExpr(type: Type): string {
       const elemRead = readExpr(elemType);
       return `() { final _list = <${elemDartType}>[]; r.beginArray(); while (r.hasNextElement()) { _list.add(${elemRead}); } r.endArray(); return _list; }()`;
     }
-    return `${m.name}Codec.decode(r)`;
+    if (m.name) return `${m.name}Codec.decode(r)`;
   }
   return "r.readString()";
 }
@@ -136,29 +173,30 @@ function defaultVal(type: Type): string {
       case "string": return "''";
       case "boolean": return "false";
       case "int8": case "int16": case "int32": case "integer":
-      case "int64": case "uint8": case "uint16": case "uint32": case "uint64":
+      case "uint8": case "uint16": case "uint32":
         return "0";
+      case "int64": case "uint64":
+        return "BigInt.zero";
       case "float32": case "float64": case "float": case "decimal":
         return "0.0";
       case "bytes": return "Uint8List(0)";
       default: return "''";
     }
   }
-  if (type.kind === "Model") {
-    const m = type as Model;
-    if (m.indexer) return "[]";
-  }
+  if (isArrayType(type)) return "[]";
+  if (type.kind === "Enum") return "''";
   return "null";
 }
 
-function getScalarName(type: Type): string | null {
-  if (type.kind === "Scalar") return (type as Scalar).name;
-  return null;
+function needsLate(type: Type, optional: boolean): boolean {
+  return !optional && isModelType(type);
 }
 
 function emitModel(model: Model): string {
   const name = model.name;
   const props = [...model.properties.values()];
+  const requiredFields = props.filter((p) => !p.optional);
+  const optionalFields = props.filter((p) => p.optional);
 
   const lines: string[] = [];
 
@@ -167,107 +205,96 @@ function emitModel(model: Model): string {
     const dartType = dartTypeFor(prop.type, prop.optional);
     lines.push(`  final ${dartType} ${prop.name};`);
   }
-  const ctorParams = props
-    .map((p) => {
-      const dartType = dartTypeFor(p.type, p.optional);
-      if (p.optional) return `this.${p.name}`;
-      return `required this.${p.name}`;
-    })
-    .join(", ");
-  lines.push(`  const ${name}({${ctorParams}});`);
+  if (props.length > 0) {
+    const ctorParams = props
+      .map((p) => {
+        if (p.optional) return `this.${p.name}`;
+        return `required this.${p.name}`;
+      })
+      .join(", ");
+    lines.push(`  ${name}({${ctorParams}});`);
+  } else {
+    lines.push(`  ${name}();`);
+  }
   lines.push(`}`);
+
+  lines.push(``);
+  lines.push(`void _writeJson${name}(JsonWriter w, ${name} obj) {`);
+  lines.push(`  w.beginObject();`);
+  for (const prop of props) {
+    if (prop.optional) {
+      lines.push(`  if (obj.${prop.name} != null) { w.writeField('${prop.name}'); ${writeJsonExpr(`obj.${prop.name}!`, prop.type, "w")}; }`);
+    } else {
+      lines.push(`  w.writeField('${prop.name}'); ${writeJsonExpr(`obj.${prop.name}`, prop.type, "w")};`);
+    }
+  }
+  lines.push(`  w.endObject();`);
+  lines.push(`}`);
+
+  lines.push(``);
+  lines.push(`void _writeMsgPack${name}(MsgPackWriter w, ${name} obj) {`);
+  if (optionalFields.length > 0) {
+    lines.push(`  var _n = ${requiredFields.length};`);
+    for (const prop of optionalFields) {
+      lines.push(`  if (obj.${prop.name} != null) _n++;`);
+    }
+    lines.push(`  w.beginObject(_n);`);
+  } else {
+    lines.push(`  w.beginObject(${props.length});`);
+  }
+  for (const prop of props) {
+    if (prop.optional) {
+      lines.push(`  if (obj.${prop.name} != null) { w.writeField('${prop.name}'); ${writeMsgPackExpr(`obj.${prop.name}!`, prop.type, "w")}; }`);
+    } else {
+      lines.push(`  w.writeField('${prop.name}'); ${writeMsgPackExpr(`obj.${prop.name}`, prop.type, "w")};`);
+    }
+  }
+  lines.push(`  w.endObject();`);
+  lines.push(`}`);
+
+  lines.push(``);
+  lines.push(`final SpecCodec<${name}> ${name}Codec = SpecCodec<${name}>(`);
+
+  lines.push(`  encodeJson: (obj) {`);
+  lines.push(`    final w = JsonWriter();`);
+  lines.push(`    _writeJson${name}(w, obj);`);
+  lines.push(`    return w.toBytes();`);
+  lines.push(`  },`);
+
+  lines.push(`  encodeMsgPack: (obj) {`);
+  lines.push(`    final w = MsgPackWriter();`);
+  lines.push(`    _writeMsgPack${name}(w, obj);`);
+  lines.push(`    return w.toBytes();`);
+  lines.push(`  },`);
+
+  lines.push(`  decode: (r) {`);
+  for (const prop of props) {
+    const dartType = dartBaseType(prop.type);
+    if (prop.optional) {
+      lines.push(`    ${dartType}? _${prop.name};`);
+    } else if (needsLate(prop.type, prop.optional)) {
+      lines.push(`    late ${dartType} _${prop.name};`);
+    } else {
+      lines.push(`    ${dartType} _${prop.name} = ${defaultVal(prop.type)};`);
+    }
+  }
+  lines.push(`    r.beginObject();`);
+  lines.push(`    while (r.hasNextField()) {`);
+  lines.push(`      switch (r.readFieldName()) {`);
+  for (const prop of props) {
+    lines.push(`        case '${prop.name}': _${prop.name} = ${readExpr(prop.type)}; break;`);
+  }
+  lines.push(`        default: r.skip();`);
+  lines.push(`      }`);
+  lines.push(`    }`);
+  lines.push(`    r.endObject();`);
+  const ctorArgs = props.map((p) => `${p.name}: _${p.name}`).join(", ");
+  lines.push(`    return ${name}(${ctorArgs});`);
+  lines.push(`  },`);
+  lines.push(`);`);
   lines.push(``);
 
-  const codecLines: string[] = [];
-  codecLines.push(`final ${name}Codec = SpecCodec<${name}>(`);
-
-  codecLines.push(`  encodeJson: (obj) {`);
-  codecLines.push(`    final w = JsonWriter();`);
-  codecLines.push(`    w.beginObject();`);
-  for (const prop of props) {
-    if (prop.optional) {
-      codecLines.push(`    if (obj.${prop.name} != null) { w.writeField('${prop.name}'); ${writeExpr(prop.type, `obj.${prop.name}!`)}; }`);
-    } else {
-      codecLines.push(`    w.writeField('${prop.name}'); ${writeExpr(prop.type, `obj.${prop.name}`)};`);
-    }
-  }
-  codecLines.push(`    w.endObject();`);
-  codecLines.push(`    return w.toBytes();`);
-  codecLines.push(`  },`);
-
-  codecLines.push(`  encodeMsgPack: (obj) {`);
-  const requiredCount = props.filter((p) => !p.optional).length;
-  const optionalProps = props.filter((p) => p.optional);
-  if (optionalProps.length > 0) {
-    codecLines.push(`    var _n = ${requiredCount};`);
-    for (const prop of optionalProps) {
-      codecLines.push(`    if (obj.${prop.name} != null) _n++;`);
-    }
-    codecLines.push(`    final w = MsgPackWriter();`);
-    codecLines.push(`    w.beginObject(_n);`);
-  } else {
-    codecLines.push(`    final w = MsgPackWriter();`);
-    codecLines.push(`    w.beginObject(${requiredCount});`);
-  }
-  for (const prop of props) {
-    if (prop.optional) {
-      codecLines.push(`    if (obj.${prop.name} != null) { w.writeField('${prop.name}'); ${writeExpr(prop.type, `obj.${prop.name}!`)}; }`);
-    } else {
-      codecLines.push(`    w.writeField('${prop.name}'); ${writeExpr(prop.type, `obj.${prop.name}`)};`);
-    }
-  }
-  codecLines.push(`    w.endObject();`);
-  codecLines.push(`    return w.toBytes();`);
-  codecLines.push(`  },`);
-
-  codecLines.push(`  decode: (r) {`);
-  for (const prop of props) {
-    if (prop.optional) {
-      const dartType = dartBaseType(prop.type);
-      codecLines.push(`    ${dartType}? _${prop.name};`);
-    } else {
-      const dartType = dartBaseType(prop.type);
-      codecLines.push(`    ${dartType} _${prop.name} = ${defaultVal(prop.type)};`);
-    }
-  }
-  codecLines.push(`    r.beginObject();`);
-  codecLines.push(`    while (r.hasNextField()) {`);
-  codecLines.push(`      switch (r.readFieldName()) {`);
-  for (const prop of props) {
-    codecLines.push(`        case '${prop.name}': _${prop.name} = ${readExpr(prop.type)}; break;`);
-  }
-  codecLines.push(`        default: r.skip();`);
-  codecLines.push(`      }`);
-  codecLines.push(`    }`);
-  codecLines.push(`    r.endObject();`);
-  const ctorArgs = props.map((p) => `${p.name}: _${p.name}`).join(", ");
-  codecLines.push(`    return ${name}(${ctorArgs});`);
-  codecLines.push(`  },`);
-  codecLines.push(`);`);
-  codecLines.push(``);
-
-  return [...lines, ...codecLines].join("\n");
-}
-
-function collectModels(program: Program): Model[] {
-  const models: Model[] = [];
-  const seen = new Set<string>();
-  for (const [ns] of program.getGlobalNamespaceType().namespaces) {
-    const nsType = program.getGlobalNamespaceType().namespaces.get(ns)!;
-    for (const [, model] of nsType.models) {
-      if (!seen.has(model.name)) {
-        seen.add(model.name);
-        models.push(model);
-      }
-    }
-  }
-  for (const [, model] of program.getGlobalNamespaceType().models) {
-    if (!seen.has(model.name)) {
-      seen.add(model.name);
-      models.push(model);
-    }
-  }
-  return models;
+  return lines.join("\n");
 }
 
 function collectServices(program: Program): { serviceName: string; models: Model[] }[] {
