@@ -10,6 +10,7 @@ import {
   Diagnostic,
   emitFile,
   listServices,
+  getNamespaceFullName,
   navigateTypesInNamespace,
   resolvePath,
 } from "@typespec/compiler";
@@ -29,61 +30,80 @@ function toSnakeCase(name: string): string {
     .replace(/^_/, "");
 }
 
+function dartScalarType(name: string): string {
+  switch (name) {
+    case "string": return "String";
+    case "boolean": return "bool";
+    case "int8": case "int16": case "int32": case "integer":
+    case "uint8": case "uint16": case "uint32":
+      return "int";
+    case "int64": case "uint64":
+      return "BigInt";
+    case "float32": case "float64": case "float": case "decimal":
+      return "double";
+    case "bytes": return "Uint8List";
+    default: return "dynamic";
+  }
+}
+
 function dartTypeFor(type: Type, optional: boolean): string {
   const base = dartBaseType(type);
   return optional ? base + "?" : base;
 }
 
 function dartBaseType(type: Type): string {
-  if (type.kind === "Scalar") {
-    const s = type as Scalar;
-    switch (s.name) {
-      case "string": return "String";
-      case "boolean": return "bool";
-      case "int8": case "int16": case "int32": case "integer":
-      case "uint8": case "uint16": case "uint32":
-        return "int";
-      case "int64": case "uint64":
-        return "BigInt";
-      case "float32": case "float64": case "float": case "decimal":
-        return "double";
-      case "bytes": return "Uint8List";
-      default: return "dynamic";
-    }
-  }
   if (type.kind === "Model") {
     const m = type as Model;
     if (m.indexer) {
-      const valueType = dartBaseType(m.indexer.value);
-      return "List<" + valueType + ">";
+      const keyName = (m.indexer.key as any).name;
+      if (keyName === "integer") {
+        const valueType = dartBaseType(m.indexer.value);
+        return "List<" + valueType + ">";
+      } else if (keyName === "string") {
+        const valueType = dartBaseType(m.indexer.value);
+        return "Map<String, " + valueType + ">";
+      }
     }
     return m.name;
   }
   if (type.kind === "Enum") return "String";
+  if (type.kind === "Scalar") return dartScalarType((type as Scalar).name);
   return "dynamic";
 }
 
 function isArrayType(type: Type): boolean {
-  if (type.kind === "Model") {
-    const m = type as Model;
-    return !!m.indexer;
-  }
-  return false;
+  if (type.kind !== "Model" || !(type as Model).indexer) return false;
+  const keyName = ((type as Model).indexer!.key as any).name;
+  return keyName === "integer";
+}
+
+function isRecordType(type: Type): boolean {
+  if (type.kind !== "Model" || !(type as Model).indexer) return false;
+  const keyName = ((type as Model).indexer!.key as any).name;
+  return keyName === "string";
 }
 
 function getArrayElementType(type: Type): Type {
-  const m = type as Model;
-  return m.indexer!.value;
+  return (type as Model).indexer!.value;
+}
+
+function getRecordElementType(type: Type): Type {
+  return (type as Model).indexer!.value;
 }
 
 function isModelType(type: Type): boolean {
   return type.kind === "Model" && !!(type as Model).name && !isArrayType(type);
 }
 
-function writeJsonExpr(expr: string, type: Type, w: string): string {
+// Single format-agnostic write expression using SpecWriter
+function writeExpr(expr: string, type: Type, w: string): string {
   if (isArrayType(type)) {
     const elem = getArrayElementType(type);
-    return `${w}.beginArray(); for (final _e in ${expr}) { ${w}.nextElement(); ${writeJsonExpr("_e", elem, w)}; } ${w}.endArray()`;
+    return `${w}.beginArray(${expr}.length); for (final _e in ${expr}) { ${w}.nextElement(); ${writeExpr("_e", elem, w)}; } ${w}.endArray()`;
+  }
+  if (isRecordType(type)) {
+    const elem = getRecordElementType(type);
+    return `${w}.beginObject(${expr}.length); for (final _e in ${expr}.entries) { ${w}.writeField(_e.key); ${writeExpr("_e.value", elem, w)}; } ${w}.endObject()`;
   }
   if (type.kind === "Scalar") {
     const s = type as Scalar;
@@ -105,42 +125,12 @@ function writeJsonExpr(expr: string, type: Type, w: string): string {
   }
   if (type.kind === "Enum") return `${w}.writeEnum(${expr})`;
   if (isModelType(type)) {
-    return `_writeJson${(type as Model).name}(${w}, ${expr})`;
+    return `_write${(type as Model).name}(${w}, ${expr})`;
   }
   return `// TODO: unknown type`;
 }
 
-function writeMsgPackExpr(expr: string, type: Type, w: string): string {
-  if (isArrayType(type)) {
-    const elem = getArrayElementType(type);
-    return `${w}.beginArray(${expr}.length); for (final _e in ${expr}) { ${writeMsgPackExpr("_e", elem, w)}; } ${w}.endArray()`;
-  }
-  if (type.kind === "Scalar") {
-    const s = type as Scalar;
-    switch (s.name) {
-      case "string": return `${w}.writeString(${expr})`;
-      case "boolean": return `${w}.writeBool(${expr})`;
-      case "int8": case "int16": case "int32": case "integer":
-        return `${w}.writeInt32(${expr})`;
-      case "int64": return `${w}.writeInt64(${expr})`;
-      case "uint8": case "uint16": case "uint32":
-        return `${w}.writeUint32(${expr})`;
-      case "uint64": return `${w}.writeUint64(${expr})`;
-      case "float32": return `${w}.writeFloat32(${expr})`;
-      case "float64": case "float": case "decimal":
-        return `${w}.writeFloat64(${expr})`;
-      case "bytes": return `${w}.writeBytes(${expr})`;
-      default: return `${w}.writeString(${expr}.toString())`;
-    }
-  }
-  if (type.kind === "Enum") return `${w}.writeEnum(${expr})`;
-  if (isModelType(type)) {
-    return `_writeMsgPack${(type as Model).name}(${w}, ${expr})`;
-  }
-  return `// TODO: unknown type`;
-}
-
-function readExpr(type: Type): string {
+function readExpr(type: Type, optional?: boolean): string {
   if (type.kind === "Scalar") {
     const s = type as Scalar;
     switch (s.name) {
@@ -163,12 +153,23 @@ function readExpr(type: Type): string {
   if (type.kind === "Model") {
     const m = type as Model;
     if (m.indexer) {
-      const elemType = getArrayElementType(type);
-      const elemDartType = dartBaseType(elemType);
-      const elemRead = readExpr(elemType);
-      return `() { final _list = <${elemDartType}>[]; r.beginArray(); while (r.hasNextElement()) { _list.add(${elemRead}); } r.endArray(); return _list; }()`;
+      const keyName = (m.indexer.key as any).name;
+      if (keyName === "integer") {
+        const elemType = getArrayElementType(type);
+        const elemDartType = dartBaseType(elemType);
+        const elemRead = readExpr(elemType);
+        return `() { final _list = <${elemDartType}>[]; r.beginArray(); while (r.hasNextElement()) { _list.add(${elemRead}); } r.endArray(); return _list; }()`;
+      } else if (keyName === "string") {
+        const elemType = getRecordElementType(type);
+        const elemDartType = dartBaseType(elemType);
+        const elemRead = readExpr(elemType);
+        return `() { final _map = <String, ${elemDartType}>{}; r.beginObject(); while (r.hasNextField()) { final _k = r.readFieldName(); _map[_k] = ${elemRead}; } r.endObject(); return _map; }()`;
+      }
     }
-    if (m.name) return `${m.name}Codec.decode(r)`;
+    if (m.name) {
+      if (optional) return `r.isNull() ? (() { r.readNull(); return null; })() : ${m.name}Codec.decode(r)`;
+      return `${m.name}Codec.decode(r)`;
+    }
   }
   return "r.readString()";
 }
@@ -226,20 +227,7 @@ function emitModel(model: Model): string {
   lines.push(`}`);
 
   lines.push(``);
-  lines.push(`void _writeJson${name}(JsonWriter w, ${name} obj) {`);
-  lines.push(`  w.beginObject();`);
-  for (const prop of props) {
-    if (prop.optional) {
-      lines.push(`  if (obj.${prop.name} != null) { w.writeField('${prop.name}'); ${writeJsonExpr(`obj.${prop.name}!`, prop.type, "w")}; }`);
-    } else {
-      lines.push(`  w.writeField('${prop.name}'); ${writeJsonExpr(`obj.${prop.name}`, prop.type, "w")};`);
-    }
-  }
-  lines.push(`  w.endObject();`);
-  lines.push(`}`);
-
-  lines.push(``);
-  lines.push(`void _writeMsgPack${name}(MsgPackWriter w, ${name} obj) {`);
+  lines.push(`void _write${name}(SpecWriter w, ${name} obj) {`);
   if (optionalFields.length > 0) {
     lines.push(`  var _n = ${requiredFields.length};`);
     for (const prop of optionalFields) {
@@ -251,9 +239,9 @@ function emitModel(model: Model): string {
   }
   for (const prop of props) {
     if (prop.optional) {
-      lines.push(`  if (obj.${prop.name} != null) { w.writeField('${prop.name}'); ${writeMsgPackExpr(`obj.${prop.name}!`, prop.type, "w")}; }`);
+      lines.push(`  if (obj.${prop.name} != null) { w.writeField('${prop.name}'); ${writeExpr(`obj.${prop.name}!`, prop.type, "w")}; }`);
     } else {
-      lines.push(`  w.writeField('${prop.name}'); ${writeMsgPackExpr(`obj.${prop.name}`, prop.type, "w")};`);
+      lines.push(`  w.writeField('${prop.name}'); ${writeExpr(`obj.${prop.name}`, prop.type, "w")};`);
     }
   }
   lines.push(`  w.endObject();`);
@@ -262,17 +250,7 @@ function emitModel(model: Model): string {
   lines.push(``);
   lines.push(`final SpecCodec<${name}> ${name}Codec = SpecCodec<${name}>(`);
 
-  lines.push(`  encodeJson: (obj) {`);
-  lines.push(`    final w = JsonWriter();`);
-  lines.push(`    _writeJson${name}(w, obj);`);
-  lines.push(`    return w.toBytes();`);
-  lines.push(`  },`);
-
-  lines.push(`  encodeMsgPack: (obj) {`);
-  lines.push(`    final w = MsgPackWriter();`);
-  lines.push(`    _writeMsgPack${name}(w, obj);`);
-  lines.push(`    return w.toBytes();`);
-  lines.push(`  },`);
+  lines.push(`  encode: (w, obj) => _write${name}(w, obj),`);
 
   lines.push(`  decode: (r) {`);
   for (const prop of props) {
@@ -289,7 +267,7 @@ function emitModel(model: Model): string {
   lines.push(`    while (r.hasNextField()) {`);
   lines.push(`      switch (r.readFieldName()) {`);
   for (const prop of props) {
-    lines.push(`        case '${prop.name}': _${prop.name} = ${readExpr(prop.type)}; break;`);
+    lines.push(`        case '${prop.name}': _${prop.name} = ${readExpr(prop.type, prop.optional)}; break;`);
   }
   lines.push(`        default: r.skip();`);
   lines.push(`      }`);
@@ -304,16 +282,28 @@ function emitModel(model: Model): string {
   return lines.join("\n");
 }
 
+function isStdLibNamespace(ns: Namespace): boolean {
+  const fullName = getNamespaceFullName(ns);
+  return fullName === "TypeSpec" || fullName.startsWith("TypeSpec.");
+}
+
 function collectServices(program: Program): { serviceName: string; models: Model[] }[] {
   const services = listServices(program);
   const result: { serviceName: string; models: Model[] }[] = [];
 
   function collectFromNs(ns: Namespace, iface?: Interface) {
+    if (isStdLibNamespace(ns)) return;
     const models: Model[] = [];
     const seen = new Set<string>();
     navigateTypesInNamespace(ns, {
       model: (m: Model) => {
-        if (m.name && !seen.has(m.name)) { models.push(m); seen.add(m.name); }
+        if (m.name && !seen.has(m.name)) {
+          const modelNs = m.namespace;
+          if (modelNs && !isStdLibNamespace(modelNs)) {
+            models.push(m);
+            seen.add(m.name);
+          }
+        }
       },
     });
     if (models.length > 0) {
