@@ -65,11 +65,11 @@ function defaultVal(type: Type): string {
 function writeExpr(expr: string, type: Type, w: string): string {
   if (isArrayType(type)) {
     const elem = arrayElementType(type);
-    return `${w}.beginArray(${expr}.length); for (final _e in ${expr}) { ${w}.nextElement(); ${writeExpr("_e", elem, w)}; } ${w}.endArray()`;
+    return `${w}.beginArray(${expr}.length); for (final item in ${expr}) { ${w}.nextElement(); ${writeExpr("item", elem, w)}; } ${w}.endArray()`;
   }
   if (isRecordType(type)) {
     const elem = recordElementType(type);
-    return `${w}.beginObject(${expr}.length); for (final _e in ${expr}.entries) { ${w}.writeField(_e.key); ${writeExpr("_e.value", elem, w)}; } ${w}.endObject()`;
+    return `${w}.beginObject(${expr}.length); for (final entry in ${expr}.entries) { ${w}.writeField(entry.key); ${writeExpr("entry.value", elem, w)}; } ${w}.endObject()`;
   }
   const n = scalarName(type);
   if (n) {
@@ -87,18 +87,18 @@ function writeExpr(expr: string, type: Type, w: string): string {
     }
   }
   if (type.kind === "Enum") return `${w}.writeEnum(${expr})`;
-  if (isModelType(type)) return `_write${(type as Model).name}(${w}, ${expr})`;
+  if (isModelType(type)) return `write${(type as Model).name}(${w}, ${expr})`;
   return `// TODO: unknown type`;
 }
 
 function readExpr(type: Type, optional?: boolean): string {
   if (isArrayType(type)) {
     const elem = arrayElementType(type);
-    return `() { final _list = <${dartBaseType(elem)}>[]; r.beginArray(); while (r.hasNextElement()) { _list.add(${readExpr(elem)}); } r.endArray(); return _list; }()`;
+    return `() { final list = <${dartBaseType(elem)}>[]; r.beginArray(); while (r.hasNextElement()) { list.add(${readExpr(elem)}); } r.endArray(); return list; }()`;
   }
   if (isRecordType(type)) {
     const elem = recordElementType(type);
-    return `() { final _map = <String, ${dartBaseType(elem)}>{}; r.beginObject(); while (r.hasNextField()) { final _k = r.readFieldName(); _map[_k] = ${readExpr(elem)}; } r.endObject(); return _map; }()`;
+    return `() { final map = <String, ${dartBaseType(elem)}>{}; r.beginObject(); while (r.hasNextField()) { final key = r.readFieldName(); map[key] = ${readExpr(elem)}; } r.endObject(); return map; }()`;
   }
   const n = scalarName(type);
   if (n) {
@@ -143,11 +143,11 @@ function emitModel(model: Model): string {
   lines.push(`}`);
   lines.push(``);
 
-  lines.push(`void _write${name}(SpecWriter w, ${name} obj) {`);
+  lines.push(`void write${name}(SpecWriter w, ${name} obj) {`);
   if (optionalFields.length > 0) {
-    lines.push(`  var _n = ${requiredFields.length};`);
-    for (const prop of optionalFields) lines.push(`  if (obj.${prop.name} != null) _n++;`);
-    lines.push(`  w.beginObject(_n);`);
+    lines.push(`  var fieldCount = ${requiredFields.length};`);
+    for (const prop of optionalFields) lines.push(`  if (obj.${prop.name} != null) fieldCount++;`);
+    lines.push(`  w.beginObject(fieldCount);`);
   } else {
     lines.push(`  w.beginObject(${props.length});`);
   }
@@ -163,29 +163,29 @@ function emitModel(model: Model): string {
   lines.push(``);
 
   lines.push(`final ${name}Codec = SpecCodec<${name}>(`);
-  lines.push(`  encode: (w, obj) => _write${name}(w, obj),`);
+  lines.push(`  encode: (w, obj) => write${name}(w, obj),`);
   lines.push(`  decode: (r) {`);
   for (const prop of props) {
     const dartType = dartBaseType(prop.type);
     if (prop.optional) {
-      lines.push(`    ${dartType}? _${prop.name};`);
+      lines.push(`    ${dartType}? ${prop.name}Val;`);
     } else if (isModelType(prop.type)) {
-      lines.push(`    late ${dartType} _${prop.name};`);
+      lines.push(`    late ${dartType} ${prop.name}Val;`);
     } else {
-      lines.push(`    ${dartType} _${prop.name} = ${defaultVal(prop.type)};`);
+      lines.push(`    ${dartType} ${prop.name}Val = ${defaultVal(prop.type)};`);
     }
   }
   lines.push(`    r.beginObject();`);
   lines.push(`    while (r.hasNextField()) {`);
   lines.push(`      switch (r.readFieldName()) {`);
   for (const prop of props) {
-    lines.push(`        case '${prop.name}': _${prop.name} = ${readExpr(prop.type, prop.optional)}; break;`);
+    lines.push(`        case '${prop.name}': ${prop.name}Val = ${readExpr(prop.type, prop.optional)}; break;`);
   }
   lines.push(`        default: r.skip();`);
   lines.push(`      }`);
   lines.push(`    }`);
   lines.push(`    r.endObject();`);
-  lines.push(`    return ${name}(${props.map(p => `${p.name}: _${p.name}`).join(", ")});`);
+  lines.push(`    return ${name}(${props.map(p => `${p.name}: ${p.name}Val`).join(", ")});`);
   lines.push(`  },`);
   lines.push(`);`);
   lines.push(``);
