@@ -52,8 +52,8 @@ function dartScalarType(name: string): string {
 }
 
 function dartBaseType(type: Type): string {
-  if (isArrayType(type)) return `List<${dartBaseType(arrayElementType(type))}>`;
-  if (isRecordType(type)) return `Map<String, ${dartBaseType(recordElementType(type))}>`;
+  if (isArrayType(type)) return `List<${dartBaseType(arrayElementType(type)!)}>`;
+  if (isRecordType(type)) return `Map<String, ${dartBaseType(recordElementType(type)!)}>`;
   const n = scalarName(type);
   if (n) return dartScalarType(n);
   if (type.kind === "Enum") return "String";
@@ -81,11 +81,11 @@ function defaultVal(type: Type): string {
 
 function writeExpr(expr: string, type: Type, w: string): string {
   if (isArrayType(type)) {
-    const elem = arrayElementType(type);
+    const elem = arrayElementType(type)!;
     return `${w}.beginArray(${expr}.length); for (final item in ${expr}) { ${w}.nextElement(); ${writeExpr("item", elem, w)}; } ${w}.endArray()`;
   }
   if (isRecordType(type)) {
-    const elem = recordElementType(type);
+    const elem = recordElementType(type)!;
     return `${w}.beginObject(${expr}.length); for (final entry in ${expr}.entries) { ${w}.writeField(entry.key); ${writeExpr("entry.value", elem, w)}; } ${w}.endObject()`;
   }
   const n = scalarName(type);
@@ -128,11 +128,11 @@ function writeExpr(expr: string, type: Type, w: string): string {
 
 function readExpr(type: Type, optional?: boolean): string {
   if (isArrayType(type)) {
-    const elem = arrayElementType(type);
+    const elem = arrayElementType(type)!;
     return `() { final list = <${dartBaseType(elem)}>[]; r.beginArray(); while (r.hasNextElement()) { list.add(${readExpr(elem)}); } r.endArray(); return list; }()`;
   }
   if (isRecordType(type)) {
-    const elem = recordElementType(type);
+    const elem = recordElementType(type)!;
     return `() { final map = <String, ${dartBaseType(elem)}>{}; r.beginObject(); while (r.hasNextField()) { final key = r.readFieldName(); map[key] = ${readExpr(elem)}; } r.endObject(); return map; }()`;
   }
   const n = scalarName(type);
