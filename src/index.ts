@@ -178,6 +178,7 @@ function generateFieldRead(f: { name: string; type: any; optional: boolean }): {
     const tmp = nextTmp();
     const stmts: string[] = [];
     if (f.optional) {
+      stmts.push(`var ${tmp};`);
       stmts.push(`${tmp} = null;`);
       stmts.push(`if (r.isNull()) {`);
       stmts.push(`  r.readNull();`);
@@ -191,7 +192,7 @@ function generateFieldRead(f: { name: string; type: any; optional: boolean }): {
       stmts.push(`}`);
       return { stmts, value: tmp };
     } else {
-      stmts.push(`${tmp} = <${dartBaseType(elem)}>[];`);
+      stmts.push(`final ${tmp} = <${dartBaseType(elem)}>[];`);
       stmts.push(`r.beginArray();`);
       stmts.push(`while (r.hasNextElement()) {`);
       stmts.push(`  ${tmp}.add(${readExpr(elem)});`);
@@ -205,6 +206,7 @@ function generateFieldRead(f: { name: string; type: any; optional: boolean }): {
     const tmp = nextTmp();
     const stmts: string[] = [];
     if (f.optional) {
+      stmts.push(`var ${tmp};`);
       stmts.push(`${tmp} = null;`);
       stmts.push(`if (r.isNull()) {`);
       stmts.push(`  r.readNull();`);
@@ -218,7 +220,7 @@ function generateFieldRead(f: { name: string; type: any; optional: boolean }): {
       stmts.push(`}`);
       return { stmts, value: tmp };
     } else {
-      stmts.push(`${tmp} = <String, ${dartBaseType(elem)}>{};`);
+      stmts.push(`final ${tmp} = <String, ${dartBaseType(elem)}>{};`);
       stmts.push(`r.beginObject();`);
       stmts.push(`while (r.hasNextField()) {`);
       stmts.push(`  ${tmp}[r.readFieldName()] = ${readExpr(elem)};`);
