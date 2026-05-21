@@ -320,7 +320,7 @@ function generateUnionCode(u: UnionInfo, L: string[]): void {
   L.push(``);
 }
 
-function emitModel(model: Model): string {
+function generateModelCode(model: Model): string {
   const name = model.name;
   const props = [...model.properties.values()];
   const requiredFields = props.filter((p) => !p.optional);
@@ -430,7 +430,7 @@ export async function $onEmit(context: EmitContext<EmitterOptions>): Promise<voi
     for (const e of svc.enums) lines.push(generateEnumCode(e));
     if (svc.enums.length > 0) lines.push(``);
     for (const model of svc.models) {
-      lines.push(emitModel(model));
+      lines.push(generateModelCode(model));
     }
     for (const u of svc.unions) {
       generateUnionCode(u, lines);
